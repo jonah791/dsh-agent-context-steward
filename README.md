@@ -1,5 +1,11 @@
 # dsh-agent-context-steward
 
+
+<p align="center">
+  <a href="https://github.com/jonah791/dsh-agent-context-steward"><img src="https://img.shields.io/badge/version-0.1.1-blue" alt="version"></a>
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
+</p>
 > 上下文管家：主动体检 + 管理建议，让智能体成为自己的上下文主编。
 > DeepSeek Harness 自研插件 · v0.1.1（借鉴 ThoughtDAG「用户是你」）
 
