@@ -13,6 +13,9 @@ import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
+// 纯逻辑层（可离线单测，见 tests/health.test.mjs / tests/marks.test.mjs）
+import { buildHealth, eventsLengthOf, type ContextReportLoose } from './health.ts'
+import { MARK_KINDS, filterMarks, isMarkKind, marksFileName, parseMarks, type ContextMark, type MarkKind } from './marks.ts'
 
 export const name = 'agent-context-steward'
 export const inject = ['contextMeter', 'agents', 'tools'] as const
@@ -27,19 +30,6 @@ export const Config = z.object({
   mediumThreshold: z.number().default(0.5),
   highThreshold: z.number().default(0.75),
 })
-
-/** dsh-agent-context 的 ContextReport（宽松结构声明，跨包不 import——版本解耦） */
-interface ContextReportLoose {
-  sessionId: string
-  pressureTokens?: number
-  projectedTokens?: number
-  totalTokens: number
-  surfaceTokens: number
-  surfaceMessages: number
-  contextWindow?: number
-  usageTotal: number
-  breakdown?: { systemTokens?: number; toolsTokens?: number; messageTokens?: number }
-}
 
 /** 宽松访问 harness/他插件服务（agents 已被 harness 声明为 AgentRegistry、contextMeter 被 dsh-agent-context 声明——用结构读取避免类型冲突） */
 interface StewardServices {
@@ -61,34 +51,20 @@ export function apply(ctx: Context, config: Config): void {
   // 结构标签 kind（角色）+ 语义标签 tags（主题）+ note + seq（当时的日志位置，供剪枝参考）
   // 侧车路径：<DSH_HOME>/context-marks/<sessionId>.json —— 独立于会话事件流（规避 harness
   // 对自定义事件的 ignorable/seq 硬约束），压缩后 seq 失效但语义（kind/tags/note）仍有效。
+  // 判据（白名单/文件名净化/容错解析/过滤）全在 marks.ts（纯函数，可离线单测）。
   const dshHome = process.env.DSH_HOME || process.cwd()
   const marksDir = resolve(join(dshHome, 'context-marks'))
-  const MARK_KINDS = ['explore', 'conclusion', 'noise', 'key', 'extracted', 'keep'] as const
-  type MarkKind = (typeof MARK_KINDS)[number]
-  type ContextMark = {
-    id: string
-    kind: MarkKind
-    tags: string[]
-    note?: string
-    seq: number | null
-    sessionId: string
-    createdAt: string
-  }
 
-  const marksFile = (sessionId: string): string => join(marksDir, sessionId.replace(/[^\w.-]/g, '_') + '.json')
-  const safeKind = (k: unknown): MarkKind | undefined => MARK_KINDS.find((x) => x === k)
+  const marksFile = (sessionId: string): string => join(marksDir, marksFileName(sessionId))
 
   async function readMarks(sessionId: string): Promise<ContextMark[]> {
     const file = marksFile(sessionId)
     if (!existsSync(file)) return []
-    try { return JSON.parse(await readFile(file, 'utf8')) as ContextMark[] } catch { return [] }
+    try { return parseMarks(await readFile(file, 'utf8')) } catch { return [] }
   }
   async function writeMarks(sessionId: string, marks: ContextMark[]): Promise<void> {
     await mkdir(marksDir, { recursive: true })
     await writeFile(marksFile(sessionId), JSON.stringify(marks, null, 2), 'utf8')
-  }
-  const sessionEventsLength = (session: unknown): number | null => {
-    try { return (session as { events?: readonly unknown[] }).events?.length ?? null } catch { return null }
   }
 
   /** 解析目标 session：参数 id > 当前发起 agent > 第一个 live agent（list 查找避免 SessionId branded 构造） */
@@ -101,59 +77,9 @@ export function apply(ctx: Context, config: Config): void {
     return agents.currentInitiator() ?? list[0]
   }
 
-  /** 生成体检报告（纯函数：report → health 视图） */
-  const buildHealth = (r: ContextReportLoose) => {
-    const capacity = r.contextWindow ?? 0
-    const pressure = r.projectedTokens ?? r.totalTokens ?? 0
-    const usageRate = capacity > 0 ? pressure / capacity : NaN
-    // 健康分级
-    let level: 'low' | 'medium' | 'high'
-    if (!isFinite(usageRate)) level = 'low'
-    else if (usageRate >= config.highThreshold) level = 'high'
-    else if (usageRate >= config.mediumThreshold) level = 'medium'
-    else level = 'low'
-    // 构成占比
-    const b = r.breakdown ?? {}
-    const bt = b.systemTokens ?? 0
-    const tt = b.toolsTokens ?? 0
-    const mt = b.messageTokens ?? 0
-    const sum = bt + tt + mt || 1
-    const breakdown = {
-      systemTokens: bt, toolsTokens: tt, messageTokens: mt,
-      systemPct: Math.round((bt / sum) * 100),
-      toolsPct: Math.round((tt / sum) * 100),
-      messagePct: Math.round((mt / sum) * 100),
-      toolsDominant: tt > bt && tt > mt && tt / sum > 0.4,
-    }
-    // 主动管理建议（用户是你：审视→剪枝→压缩）
-    const suggestions: string[] = []
-    if (level === 'low') {
-      suggestions.push('上下文健康，无需处理。可保持当前节奏。')
-    } else {
-      if (level === 'medium') {
-        suggestions.push(`使用率 ${(usageRate * 100).toFixed(0)}%：主动审视（context-stewardship）——prune_candidates 看可剪候选，剪掉已完成任务的工具结果/过时内容。`)
-      } else {
-        suggestions.push(`使用率 ${(usageRate * 100).toFixed(0)}%：高压力——先剪噪音（prune_candidates→prune_apply），再 session_compact 压缩，别让 checkpoint 带垃圾。`)
-      }
-      if (breakdown.toolsDominant) {
-        suggestions.push(`tools 占比 ${breakdown.toolsPct}%（dominant）：大块工具结果堆积——优先剪过时的工具输出（tail 优先，零缓存破坏）。`)
-      }
-      if (bt / sum > 0.5) {
-        suggestions.push(`system 占比 ${breakdown.systemPct}%：系统提示/记忆注入占用高——检查记忆注入是否必要，精简注入。`)
-      }
-    }
-    return {
-      sessionId: r.sessionId,
-      pressureTokens: pressure,
-      contextWindow: capacity,
-      usageRate: isFinite(usageRate) ? Math.round(usageRate * 100) / 100 : null,
-      level,
-      surface: { tokens: r.surfaceTokens, messages: r.surfaceMessages },
-      usageTotal: r.usageTotal,
-      breakdown,
-      suggestions,
-    }
-  }
+  /** 体检报告 → 健康视图：实现见 health.ts（纯函数，阈值显式传入——可离线单测等级/占比/建议判据） */
+  const healthOf = (r: ContextReportLoose) =>
+    buildHealth(r, { mediumThreshold: config.mediumThreshold, highThreshold: config.highThreshold })
 
   // ---- context_health：上下文体检（审视视角，用户是你） ----
   ctx.tools.register(defineTool({
@@ -180,7 +106,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       try {
         const report = meter.report(target.session)
-        return { ok: true, health: buildHealth(report) }
+        return { ok: true, health: healthOf(report) }
       } catch (err) {
         logger.warn(`context_health 失败: ${(err as Error).message}`)
         return { ok: true, health: { sessionId: String(target.id), level: 'unknown', pressureTokens: 0, contextWindow: 0, usageRate: null, suggestions: [`contextMeter 不可用: ${(err as Error).message}`] } }
@@ -207,7 +133,7 @@ export function apply(ctx: Context, config: Config): void {
     },
     async execute(args) {
       const target = resolveSession(args.sessionId)
-      const kind = safeKind(args.kind)
+      const kind = isMarkKind(args.kind)
       if (!kind) return { ok: false, mark: { id: null, error: `kind 必须 ∈ ${MARK_KINDS.join('/')}` } }
       if (!target) return { ok: false, mark: { id: null, error: '无活跃会话可打标记' } }
       const sessionId = String(target.id)
@@ -216,7 +142,7 @@ export function apply(ctx: Context, config: Config): void {
         kind,
         tags: Array.isArray(args.tags) ? args.tags.filter((t): t is string => typeof t === 'string') : [],
         note: args.note,
-        seq: sessionEventsLength(target.session),
+        seq: eventsLengthOf(target.session),
         sessionId,
         createdAt: new Date().toISOString(),
       }
@@ -249,9 +175,7 @@ export function apply(ctx: Context, config: Config): void {
       const target = args.sessionId ? { id: args.sessionId, session: null } : resolveSession()
       if (!target) return { ok: true, marks: [], count: 0 }
       const sessionId = String(target.id)
-      let marks = await readMarks(sessionId)
-      if (args.kind) marks = marks.filter((m) => m.kind === args.kind)
-      if (args.tag) marks = marks.filter((m) => m.tags.includes(args.tag as never))
+      const marks = filterMarks(await readMarks(sessionId), { kind: args.kind, tag: args.tag })
       return { ok: true, marks, count: marks.length }
     },
   }))
