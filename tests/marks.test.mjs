@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MARK_KINDS, filterMarks, isMarkKind, marksFileName, parseMarks } from '../lib/marks.js'
+import { MARK_KINDS, filterMarks, isEmptySelector, isMarkKind, marksFileName, matchMarks, parseMarks, removeMarks } from '../lib/marks.js'
 
 const mark = (over = {}) => ({
   id: 'a1b2c3d4',
@@ -82,4 +82,66 @@ test('filterMarks: 无命中返回空数组（不返回 undefined，调用方 .l
   const out = filterMarks([mark()], { tag: '不存在的主题' })
   assert.ok(Array.isArray(out))
   assert.equal(out.length, 0)
+})
+
+// ── 删除原语（I8 · 2026-10-04 · 主人点名「删除能力很弱」） ──
+
+test('isEmptySelector: 「没指名」为真 —— undefined / 空 ids / 空对象都算空', () => {
+  assert.equal(isEmptySelector({}), true)
+  assert.equal(isEmptySelector({ id: undefined, kind: undefined }), true)
+  assert.equal(isEmptySelector({ ids: [] }), true, '空数组 = 没指名（不是「全部」）')
+  assert.equal(isEmptySelector({ id: 'm1' }), false)
+  assert.equal(isEmptySelector({ ids: ['m1'] }), false)
+  assert.equal(isEmptySelector({ kind: 'noise' }), false)
+})
+
+test('matchMarks: 空选择器返回 []（不返回全部 —— 防「没指名」被读成「全删」）', () => {
+  const list = [mark({ id: '1' }), mark({ id: '2' })]
+  assert.deepEqual(matchMarks(list, {}), [])
+  assert.deepEqual(matchMarks(list, { ids: [] }), [])
+})
+
+test('matchMarks: id 精确 / ids 集合 / kind 批量 / 组合 AND（结果保持原序）', () => {
+  const list = [
+    mark({ id: '1', kind: 'noise' }),
+    mark({ id: '2', kind: 'key' }),
+    mark({ id: '3', kind: 'noise' }),
+  ]
+  assert.deepEqual(matchMarks(list, { id: '2' }).map((m) => m.id), ['2'])
+  assert.deepEqual(matchMarks(list, { ids: ['3', '1'] }).map((m) => m.id), ['1', '3'], '原序而非入参序')
+  assert.deepEqual(matchMarks(list, { kind: 'noise' }).map((m) => m.id), ['1', '3'])
+  assert.deepEqual(matchMarks(list, { ids: ['1', '2'], kind: 'noise' }).map((m) => m.id), ['1'])
+  assert.deepEqual(matchMarks(list, { kind: 'keep' }), [])
+})
+
+test('removeMarks: 空选择器 → emptySelector 标记、kept 原样（壳层据此拒绝）', () => {
+  const out = removeMarks([mark({ id: '1' })], {})
+  assert.equal(out.emptySelector, true)
+  assert.deepEqual(out.removed, [])
+  assert.equal(out.kept.length, 1)
+  assert.deepEqual(out.missing, [])
+})
+
+test('removeMarks: 指名缺失 → missing 报出（fail-closed 判据），removed/kept 仍算好供干跑展示', () => {
+  const out = removeMarks([mark({ id: '1' }), mark({ id: '2' })], { ids: ['1', 'nope'] })
+  assert.deepEqual(out.missing, ['nope'])
+  assert.deepEqual(out.removed.map((m) => m.id), ['1'])
+  assert.deepEqual(out.kept.map((m) => m.id), ['2'])
+  assert.equal(out.emptySelector, false)
+})
+
+test('removeMarks: 只按 kind 无匹配 → removed 空且 missing 空（kind 无「指名不存在」概念）', () => {
+  const out = removeMarks([mark({ id: '1', kind: 'key' })], { kind: 'noise' })
+  assert.deepEqual(out.removed, [])
+  assert.deepEqual(out.missing, [])
+  assert.equal(out.kept.length, 1)
+})
+
+test('removeMarks: 纯函数不得改入参（kept/removed 是新数组）', () => {
+  const list = [mark({ id: '1', kind: 'noise' }), mark({ id: '2', kind: 'key' })]
+  const snapshot = JSON.stringify(list)
+  const out = removeMarks(list, { kind: 'noise' })
+  assert.deepEqual(out.kept.map((m) => m.id), ['2'])
+  assert.equal(out.removed.length, 1)
+  assert.equal(JSON.stringify(list), snapshot, '入参未被就地修改')
 })

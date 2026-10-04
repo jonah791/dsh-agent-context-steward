@@ -9,13 +9,13 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, writeFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 // 纯逻辑层（可离线单测，见 tests/health.test.mjs / tests/marks.test.mjs）
 import { buildHealth, eventsLengthOf, type ContextReportLoose } from './health.ts'
-import { MARK_KINDS, filterMarks, isMarkKind, marksFileName, parseMarks, type ContextMark, type MarkKind } from './marks.ts'
+import { MARK_KINDS, filterMarks, isMarkKind, marksFileName, parseMarks, removeMarks, type ContextMark, type MarkKind, type MarkSelector } from './marks.ts'
 
 export const name = 'agent-context-steward'
 export const inject = ['contextMeter', 'agents', 'tools'] as const
@@ -180,5 +180,97 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
-  logger.info('context-steward 就绪：context_health / context_mark / context_marks 已注册')
+  // ---- context_unmark：撤销标记（删除原语三件套，语义文档 I8 · 2026-10-04 主人点名「删除能力很弱」） ----
+  // 此前标记只增不减（语义文档 §10 U4「侧车无容量上限」）——本工具是该未决问题的答案。
+  const unmarkTracePath = join(marksDir, 'unmark-trace.jsonl')
+
+  /**
+   * 留痕：每次真实删除追加一行。**吞错返回 false，绝不反噬删除**（§5.22 观测不反噬）——
+   * 留痕失败时删除照常完成，但返回值 `traced:false` + 一条 warn 让失败**可见**（不静默）。
+   */
+  async function appendUnmarkTrace(entry: Record<string, unknown>): Promise<boolean> {
+    try {
+      await mkdir(marksDir, { recursive: true })
+      await appendFile(unmarkTracePath, JSON.stringify(entry) + '\n', 'utf8')
+      return true
+    } catch (err) {
+      logger.warn(`context_unmark 留痕失败（删除已完成）: ${(err as Error).message}`)
+      return false
+    }
+  }
+
+  /** 标记 → 简报形状（略去 sessionId/createdAt：同一会话内冗余） */
+  const markBrief = (m: ContextMark) => ({ id: m.id, kind: m.kind, tags: m.tags, note: m.note ?? null })
+
+  ctx.tools.register(defineTool({
+    name: 'context_unmark',
+    description: '撤销上下文标记（删除原语：默认干跑，apply:true 才写盘）。选择器 id / ids（精确，二者互斥）与 kind（结构标签批量）至少给一个，可组合（AND）；无选择器一律拒绝（防无参全删）。指名的 id 有任一不存在 ⇒ 整体拒绝、不做部分删除（fail-closed）。真实删除追加一行留痕到 <DSH_HOME>/context-marks/unmark-trace.jsonl。对应语义文档 I8。',
+    parameters: {
+      id: { type: 'string', description: '要撤销的标记 id（来自 context_mark / context_marks；与 ids 互斥）' },
+      ids: { type: 'array', description: '批量：要撤销的标记 id 列表（与 id 互斥）', items: { type: 'string' } },
+      kind: { type: 'string', description: '按结构标签批量撤销（explore/conclusion/noise/key/extracted/keep）；与 id/ids 组合时为 AND' },
+      apply: { type: 'boolean', description: '缺省 false = 干跑只报将删清单；true 才写盘（并留痕）' },
+      sessionId: { type: 'string', description: '目标会话 id（缺省=当前活跃会话）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean', required: true }, result: { type: 'json', required: true } } },
+      render: (_a, v) => {
+        const r = (v.result ?? {}) as { error?: string; applied?: boolean; removed?: Array<{ id?: string; kind?: string }>; kept?: number; total?: number; missing?: string[]; traced?: boolean }
+        if (!v.ok) {
+          const parts = [r.error ?? '失败']
+          if (r.missing && r.missing.length > 0) parts.push(`缺失 ${r.missing.length} 个: ${r.missing.join(',')}`)
+          if (r.total !== undefined) parts.push(`现有 ${r.total} 条`)
+          return [{ type: 'text', text: '✗ ' + parts.join(' · ') }]
+        }
+        const list = (r.removed ?? []).map((m) => `${m.id}[${m.kind}]`).join(' ')
+        const tail = r.applied ? (r.traced ? ' · 已留痕' : ' · ⚠留痕失败') : '（未写盘，加 apply:true 执行）'
+        return [{ type: 'text', text: `${r.applied ? '已删除' : '干跑'} ${(r.removed ?? []).length} 条：${list} · 剩余 ${r.kept}/${r.total}${tail}` }]
+      },
+    },
+    // 出参 JSON-safe 归一（同 dsh-knowledge-graph 的 jsonEdge 先例）：本工具各分支返回的 result
+    // 形状不同、可选字段推断为 `undefined`，而 JsonValue 的索引签名不接受 undefined ⇒ 显式 any；
+    // 运行时形状由 output.schema（additionalProperties:false）兜底校验。
+    async execute(args): Promise<any> {
+      const target = args.sessionId ? { id: args.sessionId, session: null } : resolveSession()
+      if (!target) return { ok: false, result: { error: '无活跃会话可操作' } }
+      if (args.id !== undefined && args.ids !== undefined) return { ok: false, result: { error: 'id 与 ids 互斥（一次只用一种精确选择器）' } }
+      const kind = args.kind !== undefined ? isMarkKind(args.kind) : undefined
+      if (args.kind !== undefined && kind === undefined) return { ok: false, result: { error: `kind 必须 ∈ ${MARK_KINDS.join('/')}` } }
+      const sel: MarkSelector = {
+        id: args.id,
+        ids: Array.isArray(args.ids) ? args.ids.filter((t): t is string => typeof t === 'string') : undefined,
+        kind,
+      }
+      const selector = { id: args.id ?? null, ids: sel.ids ?? null, kind: args.kind ?? null }
+      const sessionId = String(target.id)
+      const marks = await readMarks(sessionId)
+      const out = removeMarks(marks, sel)
+      if (out.emptySelector) {
+        return { ok: false, result: { error: '未指定选择器（id/ids/kind 至少给一个）—— 拒绝无参全删', selector, total: marks.length } }
+      }
+      if (out.missing.length > 0) {
+        return { ok: false, result: { error: '点名标记不存在 —— 整体拒绝（fail-closed，不做部分删除）', missing: out.missing, selector, total: marks.length } }
+      }
+      if (out.removed.length === 0) {
+        return { ok: false, result: { error: '无匹配标记（未写盘，不静默成功）', selector, total: marks.length } }
+      }
+      const removed = out.removed.map(markBrief)
+      if (!args.apply) {
+        return { ok: true, result: { applied: false, removed, kept: out.kept.length, total: marks.length, selector } }
+      }
+      await writeMarks(sessionId, out.kept)
+      const traced = await appendUnmarkTrace({
+        at: new Date().toISOString(),
+        sessionId,
+        selector,
+        removedIds: out.removed.map((m) => m.id),
+        removedKinds: [...new Set(out.removed.map((m) => m.kind))],
+        before: marks.length,
+        after: out.kept.length,
+      })
+      return { ok: true, result: { applied: true, removed, kept: out.kept.length, total: marks.length, selector, traced } }
+    },
+  }))
+
+  logger.info('context-steward 就绪：context_health / context_mark / context_marks / context_unmark 已注册')
 }

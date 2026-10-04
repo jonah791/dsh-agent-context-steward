@@ -72,3 +72,64 @@ export function filterMarks(marks: ContextMark[], filter: { kind?: string; tag?:
   if (filter.tag) out = out.filter((m) => m.tags.includes(filter.tag as never))
   return out
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 删除原语（2026-10-04 · 语义文档 I8「删除原语三件套」）
+// 由来：主人 2026-10-03 点名「删除能力很弱」——标记此前只增不减（语义文档 U4 未决问题）。
+// 设计：纯层只算「删哪些」，**不落盘**；写盘 / 拒绝 / 留痕的决策全在壳层（可离线单测）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 删除选择器：`id` / `ids`（精确，二者互斥由壳层把关）与 `kind`（结构标签批量）可单用、可组合（AND）。
+ * `tag` **不作**删除选择器（语义标签是主题标签，跨主题误伤面大）。
+ */
+export type MarkSelector = { id?: string; ids?: string[]; kind?: MarkKind }
+
+/**
+ * 选择器是否为空 —— 判据**只此一处**（壳层与纯层不各写一遍）。
+ * 空 = 「没指名任何标记」，**不等于「全部」**（防无参全删）。
+ */
+export function isEmptySelector(sel: MarkSelector): boolean {
+  return sel.id === undefined && !(sel.ids !== undefined && sel.ids.length > 0) && sel.kind === undefined
+}
+
+/** 选中匹配的标记（保持原序）。空选择器 → `[]`（保守：宁可不删，也不把「没指名」读成「全删」）。 */
+export function matchMarks(marks: ContextMark[], sel: MarkSelector): ContextMark[] {
+  if (isEmptySelector(sel)) return []
+  return marks.filter((m) => {
+    if (sel.id !== undefined && m.id !== sel.id) return false
+    if (sel.ids !== undefined && sel.ids.length > 0 && !sel.ids.includes(m.id)) return false
+    if (sel.kind !== undefined && m.kind !== sel.kind) return false
+    return true
+  })
+}
+
+/** 删除的三段结果：删掉的 / 留下的 / 指名却不存在的（后者 = fail-closed 判据）。 */
+export type RemoveOutcome = {
+  removed: ContextMark[]
+  kept: ContextMark[]
+  /** 指名（id/ids）却在侧车里找不到的 id —— 非空 ⇒ 壳层必须**整体拒绝**（I8 ②） */
+  missing: string[]
+  /** 空选择器 —— 壳层必须拒绝（防无参全删） */
+  emptySelector: boolean
+}
+
+/**
+ * 删除（纯函数，**不落盘**）：算出 removed/kept/missing，由壳层决定是否写盘。
+ *   - 空选择器 → `emptySelector:true`，removed 空、kept 原样（壳层拒绝）
+ *   - 指名 id 有缺失 → 仍算出 removed/kept **供干跑展示**，但 missing 非空 ⇒ 壳层拒绝写盘
+ *   - 只按 kind 批量 → 无 missing 概念（kind 无匹配 = removed 空，不算「指名不存在」）
+ */
+export function removeMarks(marks: ContextMark[], sel: MarkSelector): RemoveOutcome {
+  if (isEmptySelector(sel)) return { removed: [], kept: marks, missing: [], emptySelector: true }
+  const named = sel.id !== undefined ? [sel.id] : (sel.ids ?? [])
+  const present = new Set(marks.map((m) => m.id))
+  const missing = named.filter((id) => !present.has(id))
+  const chosen = new Set(matchMarks(marks, sel).map((m) => m.id))
+  return {
+    removed: marks.filter((m) => chosen.has(m.id)),
+    kept: marks.filter((m) => !chosen.has(m.id)),
+    missing,
+    emptySelector: false,
+  }
+}

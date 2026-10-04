@@ -1,20 +1,20 @@
 <!--
   DSH 插件生态公约声明（plugin-ecosystem-convention · 组合优先/声明清晰/兼容优先）
-  purpose: 上下文管家（审视视角，借鉴 ThoughtDAG「用户是你」）：context_health 给当前会话做上下文体检（压力/容量使用率/构成/健康等级 + 主动管理建议）；context_mark / context_marks 以侧车（方案 B）给上下文卷轴打「结构标签 + 语义标签」，供剪枝决策参考
+  purpose: 上下文管家（审视视角，借鉴 ThoughtDAG「用户是你」）：context_health 给当前会话做上下文体检（压力/容量使用率/构成/健康等级 + 主动管理建议）；context_mark / context_marks / context_unmark 以侧车（方案 B）给上下文卷轴打「结构标签 + 语义标签」标记并支持撤销，供剪枝决策参考
   inject: 'contextMeter','agents','tools'
-  tools: context_health,context_mark,context_marks
+  tools: context_health,context_mark,context_marks,context_unmark
   runtime: host-only
   envDeps: DSH_HOME（侧车目录根；缺省回落 process.cwd()）——无网络、无外部服务、无凭据
-  boundary: 只读消费 contextMeter（不剪枝/不压缩/不算 token/不写会话事件）；标记只落侧车文件，不进 prompt、不参与任何自动判决
+  boundary: 只读消费 contextMeter（不剪枝/不压缩/不算 token/不写会话事件）；标记只落侧车文件，不进 prompt、不参与任何自动判决；删除走「默认干跑 + fail-closed + 必留痕」三件套
   compat: cordis ^4.0.1 / schemastery ^3.18.1-rc.1 / dsh-tools ^0.1.0-rc.6
 -->
 # dsh-agent-context-steward
 
 <p align="center">
-  <a href="https://github.com/jonah791/dsh-agent-context-steward"><img src="https://img.shields.io/badge/version-0.1.1-blue" alt="version"></a>
+  <a href="https://github.com/jonah791/dsh-agent-context-steward"><img src="https://img.shields.io/badge/version-0.2.0-blue" alt="version"></a>
   <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
-  <img src="https://img.shields.io/badge/tests-18%20passed-brightgreen" alt="tests">
+  <img src="https://img.shields.io/badge/tests-35%20passed-brightgreen" alt="tests">
 </p>
 
 **一句话**：给智能体一副「看自己上下文」的眼睛——`context_health` 把当前会话的上下文压力/容量使用率/构成翻译成健康等级与动作建议，`context_mark` / `context_marks` 用旁路文件给上下文卷轴打「结构 + 语义」标记。
@@ -28,12 +28,13 @@
 | `context_health` | 上下文体检（用户是你——审视我的上下文画布）：当前会话的上下文压力/容量使用率/构成（system/tools/message 占比）/健康等级 + 主动管理建议（审视→剪枝→压缩）。主动管理纪律见技能 context-stewardship |
 | `context_mark` | 给当前上下文打标记（卷轴标记：结构+语义双维）。`kind` ∈ `explore`/`conclusion`/`noise`/`key`/`extracted`/`keep`；`tags` = 语义标签（主题）；`note` = 说明。侧车存储（方案 B） |
 | `context_marks` | 列出上下文标记（卷轴标记，方案 B 侧车）：可按 `sessionId`/`kind`/`tag` 过滤。敲定后看哪些段标了 `noise`/`extracted`（可剪）、哪些是 `conclusion`/`key`（保留） |
+| `context_unmark` | **撤销**标记（删除原语）：选择器 `id` / `ids`（精确，二者互斥）或 `kind`（结构标签批量），至少给一个、可组合（AND）；**默认干跑**（`apply:true` 才写盘）；指名的 id 有任一不存在 ⇒ 整体拒绝（fail-closed，不做部分删除）；真实删除追加一行留痕到 `<DSH_HOME>/context-marks/unmark-trace.jsonl` |
 
 （上表描述与 `src/index.ts` 的 `defineTool({ description })` 同源。）
 
-**建议工作流**：头脑风暴中随手 `context_mark`（结论 `conclusion`+`key`，废弃想法 `noise`）→ 敲定后用 `context_marks` 拿清单 → 剪枝优先剪 `noise`/`extracted` → 压力仍高再 `session_compact`。
+**建议工作流**：头脑风暴中随手 `context_mark`（结论 `conclusion`+`key`，废弃想法 `noise`）→ 敲定后用 `context_marks` 拿清单 → 剪枝优先剪 `noise`/`extracted` → 压力仍高再 `session_compact`；**标错或过时的标记用 `context_unmark` 撤销**（先干跑看清将删哪些，再 `apply:true`）。
 
-**响应形状**（`output.schema`）：`context_health` → `{ok, health}`；`context_mark` → `{ok, mark}`（非法 `kind` 时 `ok:false, mark.error`）；`context_marks` → `{ok, marks, count}`。三个工具**永不因依赖缺失而抛**：无活跃会话或 `contextMeter` 抛错时返回 `ok:true` + `level:'unknown'` + 原因。
+**响应形状**（`output.schema`）：`context_health` → `{ok, health}`；`context_mark` → `{ok, mark}`（非法 `kind` 时 `ok:false, mark.error`）；`context_marks` → `{ok, marks, count}`。四个工具**永不因依赖缺失而抛**：无活跃会话或 `contextMeter` 抛错时返回 `ok:true` + `level:'unknown'` + 原因。
 
 ## 快速开始
 
@@ -54,7 +55,7 @@
 
 **3) 30 秒验证**：调 `context_health` → 期望 `ok: true`，`health.level` ∈ `low`/`medium`/`high` 且 `health.usageRate` 非 `null`（`unknown` 表示依赖未就绪，见下）。再调 `context_mark`（`kind: "key"`）→ 返回 `ok: true` 且 `mark.id` 有值，`${DSH_HOME}/context-marks/<净化 sessionId>.json` 的 mtime 前进、条数 +1。
 
-> **前置条件（激活门）**：`inject` 含 `contextMeter`——该服务由 `dsh-agent-context` 提供。它不在生效组合里时，本插件**整体不激活**，三个工具会一起消失（且不报错）。装本插件前先确认 `dsh-agent-context` 已挂载。
+> **前置条件（激活门）**：`inject` 含 `contextMeter`——该服务由 `dsh-agent-context` 提供。它不在生效组合里时，本插件**整体不激活**，四个工具会一起消失（且不报错）。装本插件前先确认 `dsh-agent-context` 已挂载。
 
 ## 配置
 
@@ -110,7 +111,7 @@ f=$(ls -t "${DSH_HOME:-$HOME/.dsh}"/context-marks/*.json | head -1); stat -c '%y
 
 1. **进程级（最可靠）**：`lib/index.js` 的 mtime **早于** web 进程启动时间（`Get-Process node | Select StartTime`），且 `src/index.ts` 不新于 `lib/index.js`（源码改了没构建 = 跑的还是旧产物）。**本轮实测**：`lib/index.js` = `2026-09-14 10:32:38`，node 主进程 PID 14040 启动于 `2026-09-14 11:54:48` → **当前构建已在线上运行**。
 2. **落盘物证**：调一次 `context_mark` 后侧车文件 mtime 前进、条目数 +1。
-3. **工具面**：三个工具均已出现，且 `context_health` 返回 `level` 非 `unknown`。
+3. **工具面**：四个工具均已出现，且 `context_health` 返回 `level` 非 `unknown`。
 
 > ⚠ **「重新构建 ≠ 生效」**：产物 mtime 新只证明「构建过」，不证明「进程在跑它」。判据是**进程启动时间 vs 产物 mtime**（AGENTS §5.11 §6）。
 > 另注两点：① `npm test` 脚本**不含构建**，改完源码必须 `npm run build`；② 2026-09-14 的 testability 重构是「逐字等价搬移」——`health.ts` 与旧闭包实现**行为完全一致**，所以**不能靠行为差异判断重构是否生效**，只能靠 mtime 判据。日志行（`context-steward 就绪：…`）走宿主 logger、**不落盘**，不得作为唯一证据。
@@ -120,7 +121,7 @@ f=$(ls -t "${DSH_HOME:-$HOME/.dsh}"/context-marks/*.json | head -1); stat -c '%y
 | 档 | 动作 | 后果 |
 |----|------|------|
 | 源码级 | `git revert <commit>` → `npm run build` → 预检 → 重启 | 回到上一版判据（本次重构是等价搬移，回退只回退可测性） |
-| 组合级 | profile patch 该行加 `disabled: true`，或 `plugin_stop dsh-agent-context-steward` | 三个工具消失，`contextMeter` 不再被本插件读取；**侧车文件保留，数据不丢** |
+| 组合级 | profile patch 该行加 `disabled: true`，或 `plugin_stop dsh-agent-context-steward` | 四个工具消失，`contextMeter` 不再被本插件读取；**侧车文件保留，数据不丢** |
 | 运行期 | 无需动作（无内存状态、无定时器、无后台任务） | 侧车是纯数据文件；删某个 `<sessionId>.json` = 丢弃该会话的标记（不可逆，但不影响会话本身） |
 
 ## 测试
@@ -138,11 +139,11 @@ npm run build && npm test     # npm test = node --test "tests/*.test.mjs"
 
 **无需网络、无需真实外部依赖**（纯函数 + `node:test`，不碰 `ctx`、不读侧车文件）。
 
-**未覆盖**（显式标注）：ctx 级集成——假 `ctx` 跑 `apply()` 断言三个工具注册；`contextMeter.report` 抛错时的降级分支；侧车写失败（目录不可写）冒泡路径；`resolveSession` 的三级回落（`id > currentInitiator > list[0]`）。见 [`docs/semantic.md`](docs/semantic.md) §10。
+**未覆盖**（显式标注）：ctx 级集成——假 `ctx` 跑 `apply()` 断言四个工具注册；`contextMeter.report` 抛错时的降级分支；侧车写失败（目录不可写）冒泡路径；`resolveSession` 的三级回落（`id > currentInitiator > list[0]`）。见 [`docs/semantic.md`](docs/semantic.md) §10。
 
 ## 设计要点
 
-- **`inject` 是激活门，不是提示**：`inject = ['contextMeter','agents','tools']`——`dsh-agent-context` 不在组合时本插件**整体不激活**（三个工具一起消失、无显式报错）。这是「工具面永不因依赖缺失而炸」的代价：失败形态是**静默缺席**而非报错，装完必须用上面的「30 秒验证」确认存在。
+- **`inject` 是激活门，不是提示**：`inject = ['contextMeter','agents','tools']`——`dsh-agent-context` 不在组合时本插件**整体不激活**（四个工具一起消失、无显式报错）。这是「工具面永不因依赖缺失而炸」的代价：失败形态是**静默缺席**而非报错，装完必须用上面的「30 秒验证」确认存在。
 - **侧车（方案 B）而非会话事件**：标记**不写进会话事件流**——自定义事件受 harness 的 `ignorable`/`seq` 硬约束，写进去会污染会话日志的物理层。代价是标记与会话解耦（压缩后 `seq` 失效，但 `kind`/`tags`/`note` 的语义仍有效）。
 - **判据走纯函数，接线留在 `apply()`**：`health.ts`（体检视图）与 `marks.ts`（白名单/净化/容错/过滤）不引 `node:fs`、不碰 `ctx`。原因很具体：这三条判据**都不会报错，只会静默给出错误的剪枝建议**——阈值比较符号写反 = 高压力报成健康；净化正则写错 = 标记落到别的会话文件上。
 - **降级作答，不炸工具面**：`contextMeter.report` 抛错 → `{ok:true, level:'unknown', suggestions:['contextMeter 不可用: …']}`；无活跃会话 → `level:'unknown'` + 「无活跃会话」。**相反地，侧车写失败是响亮失败**（`writeFile` 抛错冒泡到工具层）——写盘没成功不许装成成功。

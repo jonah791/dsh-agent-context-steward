@@ -6,13 +6,13 @@
 
 | 项 | 值 |
 |----|----|
-| 能力名 | dsh-agent-context-steward（上下文体检 `context_health` + 卷轴标记 `context_mark`/`context_marks`） |
+| 能力名 | dsh-agent-context-steward（上下文体检 `context_health` + 卷轴标记 `context_mark`/`context_marks` + **删除原语 `context_unmark`**） |
 | 主副本路径 | `self-plugins/dsh-agent-context-steward/docs/semantic.md`（本文件） |
-| 实现落点 | `src/index.ts`（工具接线 + 侧车读写）、`src/health.ts`（体检报告 → 健康视图纯函数）、`src/marks.ts`（标记白名单/文件名净化/容错解析/过滤纯函数） |
-| 版本 | 0.1.1（git head `c3de023`） |
-| 挂载位置 | `.dsh/profiles/web/cordis.patch.yml` **行 213–215** `insert` 块：行 id `agent-agent-context-steward`（:214）、name `dsh-agent-context-steward`（:215）；**无 config**（阈值用默认 0.5 / 0.75） |
-| 状态 | **draft** |
-| 测试 | `tests/health.test.mjs`、`tests/marks.test.mjs` |
+| 实现落点 | `src/index.ts`（工具接线 + 侧车读写 + 删除留痕）、`src/health.ts`（体检报告 → 健康视图纯函数）、`src/marks.ts`（标记白名单/文件名净化/容错解析/过滤/**删除选择器**纯函数） |
+| 版本 | **0.2.0**（`package.json` / `dsh-plugin.json` 同步；上一版 0.1.1 = 增 `context_unmark` 之前） |
+| 挂载位置 | `.dsh/profiles/web/cordis.patch.yml` 行 id `agent-agent-context-steward` + name `dsh-agent-context-steward`（2026-10-04 实测在 **:200–201**；行号随 patch 改动漂移，**以行 id 为准**）；**无 config**（阈值用默认 0.5 / 0.75） |
+| 状态 | **draft**（`context_unmark` 的**线上验收待重启**：代码已构建、测试 35/35 绿，但运行中的 web 仍加载旧构建 ⇒ 重启前它不在工具面里） |
+| 测试 | `tests/health.test.mjs`、`tests/marks.test.mjs`（含删除纯层判据）、`tests/unmark-shell.test.mjs`（**壳层真注册**）—— 合计 35 例，2026-10-04 全绿 |
 
 ## 1 · 定位与反定位
 
@@ -52,7 +52,15 @@
         │                                   └─▶ readMarks(sessionId) → push(mark) → writeMarks
         │                                         mark.seq = eventsLengthOf(target.session)（可 null）
         │
-        └──context_marks(sessionId?,kind?,tag?)──▶ readMarks → filterMarks（kind 精确 / tag ∈ tags）
+        ├──context_marks(sessionId?,kind?,tag?)──▶ readMarks → filterMarks（kind 精确 / tag ∈ tags）
+        │
+        └──context_unmark(id|ids|kind, apply?)──▶ removeMarks（纯函数 marks.ts:123）
+                                              ├─ 空选择器          → ok:false（防无参全删）
+                                              ├─ missing 非空      → ok:false（fail-closed，不写盘）
+                                              ├─ removed 为空      → ok:false（不静默成功）
+                                              ├─ apply 缺省 false  → ok:true 干跑（不写盘、不留痕）
+                                              └─ apply=true        → writeMarks(kept) → appendUnmarkTrace
+                                                                     （留痕失败 ⇒ traced:false，删除照常）
 
   建议文案指向的下一步（不由本插件执行）：
     medium → prune_candidates 看候选     high → prune_candidates→prune_apply 再 session_compact
@@ -67,6 +75,13 @@
 5. **I5 阈值比较符号固定为 `>=`**：`usageRate >= highThreshold → high`；容量缺失（`contextWindow` 0/undefined）→ `usageRate=NaN` → **保守判 `low`**（`health.ts:45-51`）。
 6. **I6 占比归一防零除**：`sum = bt+tt+mt || 1`（全零时占比 0%，不产生 NaN）。
 7. **I7 观测不反噬**：`eventsLengthOf` 对缺 `events`/形状异常/访问抛错 → `null`（不抛，`health.ts:99`）。
+8. **I8 删除原语三件套（2026-10-04 新立 —— 主人点名「删除能力很弱」）**：`context_unmark` 是标记的**撤销**原语，与 `kg_del_node`/`kg_del_edge`、`plugin_purge` **同形**，三条缺一不可：
+   - ① **默认干跑**：`apply` 缺省 `false` —— 只回答「将删哪些 + 删后剩几条」，**不写盘**；
+   - ② **fail-closed**：`id`/`ids` 指名的标记**有任一不存在** ⇒ **整体拒绝**（`ok:false` + `missing[]`），**不做部分删除**（宁可不删，也不留「以为删了」的错觉）；
+   - ③ **必留痕**：每次 `apply:true` 追加一行到 `<DSH_HOME>/context-marks/unmark-trace.jsonl`（时间 / 会话 / 选择器 / 删掉的 id 与 kind / 条数变化）；留痕失败**不阻塞**删除（吞错返回 `false`，§5.22 观测不反噬）。
+   - **选择器语义**：`id` 或 `ids`（精确）与 `kind`（结构标签批量）可单用、可组合（组合 = 同时满足）；**无任何选择器 ⇒ 拒绝**（防「无参全删」）；`tag` **不作**删除选择器（语义标签是主题标签，跨主题误伤面大）。
+   - **边界（与 kg 的差异，必须显式）**：标记侧车**无引用完整性风险** —— 2026-10-04 全库 grep 证实**只有本插件读** `<DSH_HOME>/context-marks/`（`dsh-agent-self-rewrite/src/probe.ts`、`dsh-prompt-defense/src/detect.ts` 里的 `context_marks` 是**工具名枚举**，非数据消费）。故 fail-closed 只针对「指名的标记不存在」，不涉及跨实体悬空引用；mark id **不被任何东西引用**，删除不产生悬空边。
+   - **replay-safe 不受影响**：标记存**侧车**（方案 B），不在会话事件流内 ⇒ 增删标记都不改变事件流、不影响 `prune_apply` 的 append-only 回放语义。
 
 ## 4 · 契约
 
@@ -104,10 +119,15 @@
 | 目标会话解析 | `src/index.ts:71 resolveSession(sessionId?)`：`id > currentInitiator() > list()[0]` | 每个工具调用 |
 | `context_health` | `src/index.ts:85 ctx.tools.register(defineTool(...))`；`meter.report` `:108` | 工具面 |
 | `context_mark` | `src/index.ts:118`；白名单校验 `:136`；侧车写 `:149-151` | 工具面 |
-| `context_marks` | `src/index.ts:157`；过滤 `:178` | 工具面 |
-| 落盘产物 | `<DSH_HOME>/context-marks/<sessionId>.json` | — |
-| 消费方 | 我（剪枝决策）；`dsh-agent-context` 的 `prune_*` 工具（下游动作）；`dsh-agent-context` 的 `contextMeter`（被读，非本插件） | — |
-| 测试 | `tests/health.test.mjs`（等级/占比/建议判据）、`tests/marks.test.mjs`（白名单/净化/容错/过滤） | `pnpm test` |
+| `context_marks` | `src/index.ts:157`（`name` `:158`）；过滤 `:178` | 工具面 |
+| `context_unmark` | `src/index.ts:205`（`name` `:206`）；纯层 `marks.ts:123 removeMarks`；选择器判据 `marks.ts:92 isEmptySelector` | 工具面 |
+| 侧车 / 留痕路径 | `src/index.ts:56 marksDir`（`<DSH_HOME>/context-marks`）；`:185 unmarkTracePath`（`unmark-trace.jsonl`） | apply |
+| 留痕写入 | `src/index.ts:191 appendUnmarkTrace`（吞错返回 bool，**不反噬删除**） | 每次 `apply:true` 删除 |
+| 落盘产物 | `<DSH_HOME>/context-marks/<sessionId>.json`（标记全量）+ `<DSH_HOME>/context-marks/unmark-trace.jsonl`（删除留痕，**追加**） | — |
+| 消费方 | 我（剪枝决策）；`dsh-agent-context` 的 `prune_*` 工具（下游动作）；`dsh-agent-context` 的 `contextMeter`（被读，非本插件）。**标记侧车无其他消费者**（2026-10-04 全库 grep 证实） | — |
+| 测试 | `tests/health.test.mjs`、`tests/marks.test.mjs`（含删除纯层判据）、`tests/unmark-shell.test.mjs`（**壳层真注册**，含 I8 三件套 + 留痕尸体样本） | `npm test`（35 例，2026-10-04 全绿） |
+
+> 行号为 2026-10-04 快照；改动 `index.ts` 后行号会漂移，**以符号名为准**。
 
 ## 5 · 边界与信任
 
@@ -142,7 +162,17 @@
 | A5 | 非法 kind 被拒且不写盘 | 调 `context_mark(kind:'bogus')` → `ok:false`；侧车文件 mtime **不变** | 待验收 |
 | A6 | 容量缺失时保守判 low | 构造 `contextWindow` 缺失的 report → `level='low'`、`usageRate=null` | 待验收 |
 | A7 | contextMeter 不可用时降级 | 停用 `dsh-agent-context` → `context_health` 仍返回 `ok:true` + `level:'unknown'` + 原因 | 待验收 |
-| A8 | 运行中的 web 加载的是当前构建 | `lib/index.js` mtime **2026-09-14 10:23:57 晚于** web 启动 10:05:47 → **当前重构产物未生效**（见 §8 生效判据） | ⚠ 已实测（结论：**未生效**，待重启） |
+| A8 | 运行中的 web 加载的是当前构建 | 比 `lib/index.js` mtime 与 web 进程启动时间 | 待验收（2026-10-04 重构建后 mtime 前进；**须重启才生效**，见 §8） |
+| A9 | **I8① 默认干跑**：不传 `apply` 不写盘、不留痕 | `node --test tests/unmark-shell.test.mjs`「I8① 默认干跑」：逐字节比对侧车 + 零留痕 | ✓ 已实测 |
+| A10 | **I8② fail-closed**：指名 id 有缺失 ⇒ 整体拒绝、**不做部分删除** | 同文件「I8② 尸体样本」：`ids:['m1','nope']` ⇒ `ok:false` + `missing:['nope']` + 文件不变 + 零留痕 | ✓ 已实测 |
+| A11 | **I8③ 必留痕**：真实删除追加一行（含 before/after/removedIds） | 同文件「I8③ 正路径」：`traced:true` + 留痕字段逐项断言 | ✓ 已实测 |
+| A12 | 无选择器 ⇒ 拒绝（防无参全删） | 同文件：`{}` / `{apply:true}` / `{ids:[]}` 三种**合法 JSON** 的空选择器全拒 | ✓ 已实测 |
+| A13 | 按 kind 批量删 + 组合选择器 AND 语义 | 同文件「按 kind 批量删」：noise 全清；`ids+kind` 无交集 ⇒ 无匹配 | ✓ 已实测 |
+| A14 | 无匹配 ⇒ `ok:false`（不静默成功，与 `kg_del_edge` 同形） | 同文件「无匹配」 | ✓ 已实测 |
+| A15 | 删到空 ⇒ 侧车落成 `[]`、**文件保留**（不删文件本体） | 同文件「删到空」 | ✓ 已实测 |
+| A16 | **留痕失败不阻塞删除**（观测不反噬 · §5.22 规则 3） | 同文件「I8③ 尸体样本」：把留痕路径占成**目录** ⇒ `ok:true` + `applied:true` + `traced:false`（失败可见）+ 盘上确已删除 | ✓ 已实测 |
+| A17 | 纯层删除判据（空选择器 / 缺失 / 无匹配 / 入参不可变） | `node --test tests/marks.test.mjs` | ✓ 已实测 |
+| A18 | 全量回归（三个测试文件 35 例） | `npm test` ⇒ `35 pass / 0 fail`（rc=0，2026-10-04 10:46） | ✓ 已实测 |
 
 ## 8 · 与实现的关系
 
@@ -158,7 +188,7 @@
   2. **落盘物证**：调一次 `context_mark` 后 `<DSH_HOME>/context-marks/<sessionId>.json` 的 mtime 前进、条目数 +1。
   3. **工具可答**：`context_health` 返回 `level` 与 `usageRate`（非 `unknown`）——`health.ts` 的新判据若未生效，等级计算会走旧闭包实现（两者当前逐字等价，故**不能靠行为差异判断**，只能靠 mtime 判据）。
 - **回退**：
-  - 组合面：`plugin_stop dsh-agent-context-steward`（patch `disabled:true` + 预检 + 哨兵重启）——三个工具消失，侧车文件保留（数据不丢）。
+  - 组合面：`plugin_stop dsh-agent-context-steward`（patch `disabled:true` + 预检 + 哨兵重启）——四个工具消失，侧车文件保留（数据不丢）。
   - 代码面：`git revert <commit>`（head `c3de023`）+ `pnpm build` + 重启 web（**注意**：本次 testability 重构是「逐字等价搬移」，回退代码不改变行为，只回退可测性）。
   - 数据面：删除某个 `<sessionId>.json` = 丢弃该会话的标记（**不可逆**，但标记只是剪枝参考，不影响会话本身）；误删风险低。
 
@@ -168,18 +198,31 @@
 
 - 语义**被确认**：
   - 侧车方案（方案 B）真的在用：`<DSH_HOME>/context-marks/` 目录存在且含真实标记文件。
-  - 「steward 看 / context 剪」的职责分离在工具面成立（本插件三个工具**没有任何**剪枝动作）。
+  - 「steward 看 / context 剪」的职责分离在工具面成立（本插件四个工具**没有任何**剪枝动作）。
 - 语义**被补充**（本文首次写清的部分）：
-  - **`inject` 含 `contextMeter` = 激活门**：`dsh-agent-context` 不在组合时，本插件三个工具会**整体消失**（且无显式报错）。
+  - **`inject` 含 `contextMeter` = 激活门**：`dsh-agent-context` 不在组合时，本插件四个工具会**整体消失**（且无显式报错）。
   - **`mark.seq` 的语义已退化**：`Session.events` 在 alpha.4 移除 → `eventsLengthOf` 返回 `null` → `seq` 不再代表「当时的日志位置」（字段保留、值为 null）。
   - `contextMeter` 不可用时**降级作答**（`level:'unknown'` + 原因）而不是失败——这是「工具面永不因依赖缺失而炸」的设计。
 - 语义**被修正**：无（未发现实现与文档冲突）。
 - 教训（同时回写技能 `semantic-doc-first`）：**「harness 版本变化导致的语义退化」要在文档里显式标注**——字段还在、代码没改、行为静悄悄变了（`seq` 恒 null）。这类退化只能靠「文档写明每个字段的**来源与失效条件**」来暴露。
+
+**2026-10-04：删除原语 `context_unmark`（主人 2026-10-03 点名「删除能力很弱」）**
+
+- 语义**被补充**：
+  - **I8「删除原语三件套」**：默认干跑 / fail-closed / 必留痕 —— 与 `kg_del_node`/`kg_del_edge`、`plugin_purge` **同形**，构成插件家族的通则（不在两处各发明一套）。
+  - **fail-closed 的适用面随风险定**：标记**无引用完整性风险**（2026-10-04 全库 grep：`<DSH_HOME>/context-marks/` 只被本插件读；`probe.ts`/`detect.ts` 里出现的 `context_marks` 是**工具名枚举**）⇒ 本插件的 fail-closed 只针对「点名的标记不存在」，**不涉及悬空边**。这是对三件套的**范围限定**：三件套是形态不是教条 —— 它去掉的是「能删」，加上的是「删得可见、删不干净就整单拒绝」。
+  - **`tag` 不作删除选择器**：语义标签是主题标签，跨主题误伤面大（写进 I8）。
+  - **`undefined` 不是 lossless JSON**：`{id: undefined}` 这类参数在 **harness 参数校验层**就被拒（`ToolArgsError INVALID_ARGS`），根本走不到工具 —— 「空选择器」判据只需覆盖 `{}` / `{ids:[]}` 这类**合法 JSON**。
+- 语义**被修正**：
+  - §8 的「未生效」结论已过期（2026-09-14 的 mtime 判据 vs 当时的 web 启动时间）—— 2026-10-04 重新构建后该判据**须重新测量**，A8 已改为「待验收」。
+  - 本插件工具数 **3 → 4**：README frontmatter `tools:` 自述与正文措辞（共 9 处「三个工具」）同批更新 —— **自述与清单必须同步**（`plugin_audit` 的漂移判据正是这一项）。
+- **实践读数（诚实标注）**：侧车自 2026-08-29 起**只有 1 个文件、1 条标记**，一个多月未新增 ⇒ 本工具的**预期使用率极低**。它补的是**能力完整性**（只增不减的结构缺口 + §10 U4），不是当下的高频痛点。这个区分本身有价值：**「删除能力弱」的后果取决于资产是否真在增长** —— kg 图在长（删不掉 = 真痛点），标记侧车基本不长（缺删除 = 理论缺口）。
+- 教训：**「只增不减」的根源不只是缺删除工具，还有「创建门槛低而使用场景少」** —— 补删除只解决前者；后者要由「这个设施到底该不该存在」来回答，不由本次改造回答。
 
 ## 10 · 未决问题
 
 - **U1 `seq` 字段去留**：既然 `Session.events` 已移除，`seq` 是否该改为从会话日志按 `session-<id>` 读真实事件数？或直接删字段（改契约）？
 - **U2 侧车读失败静默返回 `[]`**：与「坏数据放行 + 落 issue」纪律不符（标记看起来凭空消失）。倾向：读失败记 warn + 落盘 issue 计数。
 - **U3 `context_marks` 无活跃性校验**：传任意 `sessionId` 可读任意侧车文件。倾向：限定为「当前活跃会话 ∪ 本会话历史」，或至少在无该文件时返回明确「无标记记录」而非空数组（两者当前不可区分）。
-- **U4 侧车无容量上限**：是否加「同会话最多 N 条」+ `extracted`/`noise` 类标记的回收策略？
+- **U4 侧车无容量上限**：✅ **2026-10-04 已解**（`context_unmark` 提供**人工**回收；**不做自动回收** —— 自动清理违反「禁止任何自动决策机制」）。剩余开放项：是否要**硬上限**（同会话最多 N 条）—— 倾向不加（上限会在最需要标记的长上下文会话里先失效）。
 - **U5 建议闭环缺失**：`suggestions` 发出后没有采纳/效果度量——是否与 `dsh-agent-context` 的剪枝统计（`prune_stats`）联动，让「建议 → 动作 → 上下文下降」可验证？
