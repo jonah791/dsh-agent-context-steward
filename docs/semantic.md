@@ -159,7 +159,7 @@
 | A2 | 三种工具均已注册 | `plugin_inspect dsh-agent-context-steward` / 调 `context_health` 返回 `ok:true` | ✓ 2026-10-05（线上真调：`上下文体检 session-432d493e… [low] 使用率 19%（187825/1000000 tokens）`） |
 | A3 | 等级判据与占比口径 | `node --test tests/health.test.mjs` | ✓ 2026-10-05（10 pass / 0 fail） |
 | A4 | 白名单/净化/容错/过滤 | `node --test tests/marks.test.mjs` | ✓ 2026-10-05（15 pass / 0 fail） |
-| A5 | 非法 kind 被拒且不写盘 | 调 `context_mark(kind:'bogus')` → `ok:false`；侧车文件 mtime **不变** | ✓ 不写盘 2026-10-05（本会话侧车**未创建**）；⚠ **当时 render 把失败显示成「标记 null [undefined]」**（原因丢失）→ 已修并新增 A19 守住；**渲染复验待重启** |
+| A5 | 非法 kind 被拒且不写盘 | 调 `context_mark(kind:'bogus')` → `ok:false`；侧车文件 mtime **不变** | ✓ **完整通过 2026-10-05**：不写盘（本会话侧车未创建）+ **渲染复验（web 重启后）输出 `✗ kind 必须 ∈ explore/conclusion/noise/key/extracted/keep`**；缺陷（把失败显示成「标记 null [undefined]」）已修并由 A19 守住 |
 | A6 | 容量缺失时保守判 low | 构造 `contextWindow` 缺失的 report → `level='low'`、`usageRate=null` | ✓ 2026-10-05（`tests/health.test.mjs:81`「缺 contextWindow（零容量）→ 使用率 null、等级保守取 low，不抛」，绿） |
 | A7 | contextMeter 不可用时降级 | 停用 `dsh-agent-context` → `context_health` 仍返回 `ok:true` + `level:'unknown'` + 原因 | ⏸ **有意未验**（2026-10-05）：需停用 `dsh-agent-context` ⇒ **动线上组合**，代价大于收益；代码路径已由 `src/index.ts:110-113` 的 try/catch 显式实现（可读性验收），**不冒充已验** |
 | A8 | 运行中的 web 加载的是当前构建 | 比 `lib/index.js` mtime 与 web 进程启动时间 | ✓ 2026-10-05（`lib/index.js` mtime=1791081870 **早于** web 启动 1791114066 达 ~8.9h ⇒ **已生效**；推翻了原文「须重启才生效」的旧判断——那是 10-04 当时的时点结论） |
