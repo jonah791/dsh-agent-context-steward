@@ -127,7 +127,10 @@ export function apply(ctx: Context, config: Config): void {
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean', required: true }, mark: { type: 'json', required: true } } },
       render: (_a, v) => {
-        const m = (v.mark ?? {}) as { id?: string; kind?: string; tags?: string[]; seq?: number | null; note?: string }
+        const m = (v.mark ?? {}) as { id?: string; kind?: string; tags?: string[]; seq?: number | null; note?: string; error?: string }
+        // 失败必须响亮（fail-loud）：此前 render 不看 `ok`，把 `ok:false` 渲染成
+        // 「标记 null [undefined]」——错误原因整条丢失（2026-10-05 A5 验收抓到 · M1/M3 守住）。
+        if (v?.ok === false) return [{ type: 'text', text: `✗ ${m.error ?? '打标记失败'}` }]
         return [{ type: 'text', text: `标记 ${m.id} [${m.kind}] ${(m.tags ?? []).join(',')}${m.note ? ' — ' + m.note : ''}${m.seq !== null && m.seq !== undefined ? ' @seq' + m.seq : ''}` }]
       },
     },

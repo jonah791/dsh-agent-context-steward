@@ -156,13 +156,13 @@
 | # | 可证伪命题 | 证据（命令/文件/日志行） | 状态 |
 |---|-----------|------------------------|------|
 | A1 | 侧车目录真的在用 | `Get-ChildItem .dsh/context-marks` → 至少 1 个 `<sessionId>.json`（实测：`session-207459bf-….json` 303B，mtime 2026-08-29 23:59） | ✓ 已实测 |
-| A2 | 三种工具均已注册 | `plugin_inspect dsh-agent-context-steward` / 调 `context_health` 返回 `ok:true` | 待验收 |
-| A3 | 等级判据与占比口径 | `node --test tests/health.test.mjs` | 待验收（未在本轮执行） |
-| A4 | 白名单/净化/容错/过滤 | `node --test tests/marks.test.mjs` | 待验收（未在本轮执行） |
-| A5 | 非法 kind 被拒且不写盘 | 调 `context_mark(kind:'bogus')` → `ok:false`；侧车文件 mtime **不变** | 待验收 |
-| A6 | 容量缺失时保守判 low | 构造 `contextWindow` 缺失的 report → `level='low'`、`usageRate=null` | 待验收 |
-| A7 | contextMeter 不可用时降级 | 停用 `dsh-agent-context` → `context_health` 仍返回 `ok:true` + `level:'unknown'` + 原因 | 待验收 |
-| A8 | 运行中的 web 加载的是当前构建 | 比 `lib/index.js` mtime 与 web 进程启动时间 | 待验收（2026-10-04 重构建后 mtime 前进；**须重启才生效**，见 §8） |
+| A2 | 三种工具均已注册 | `plugin_inspect dsh-agent-context-steward` / 调 `context_health` 返回 `ok:true` | ✓ 2026-10-05（线上真调：`上下文体检 session-432d493e… [low] 使用率 19%（187825/1000000 tokens）`） |
+| A3 | 等级判据与占比口径 | `node --test tests/health.test.mjs` | ✓ 2026-10-05（10 pass / 0 fail） |
+| A4 | 白名单/净化/容错/过滤 | `node --test tests/marks.test.mjs` | ✓ 2026-10-05（15 pass / 0 fail） |
+| A5 | 非法 kind 被拒且不写盘 | 调 `context_mark(kind:'bogus')` → `ok:false`；侧车文件 mtime **不变** | ✓ 不写盘 2026-10-05（本会话侧车**未创建**）；⚠ **当时 render 把失败显示成「标记 null [undefined]」**（原因丢失）→ 已修并新增 A19 守住；**渲染复验待重启** |
+| A6 | 容量缺失时保守判 low | 构造 `contextWindow` 缺失的 report → `level='low'`、`usageRate=null` | ✓ 2026-10-05（`tests/health.test.mjs:81`「缺 contextWindow（零容量）→ 使用率 null、等级保守取 low，不抛」，绿） |
+| A7 | contextMeter 不可用时降级 | 停用 `dsh-agent-context` → `context_health` 仍返回 `ok:true` + `level:'unknown'` + 原因 | ⏸ **有意未验**（2026-10-05）：需停用 `dsh-agent-context` ⇒ **动线上组合**，代价大于收益；代码路径已由 `src/index.ts:110-113` 的 try/catch 显式实现（可读性验收），**不冒充已验** |
+| A8 | 运行中的 web 加载的是当前构建 | 比 `lib/index.js` mtime 与 web 进程启动时间 | ✓ 2026-10-05（`lib/index.js` mtime=1791081870 **早于** web 启动 1791114066 达 ~8.9h ⇒ **已生效**；推翻了原文「须重启才生效」的旧判断——那是 10-04 当时的时点结论） |
 | A9 | **I8① 默认干跑**：不传 `apply` 不写盘、不留痕 | `node --test tests/unmark-shell.test.mjs`「I8① 默认干跑」：逐字节比对侧车 + 零留痕 | ✓ 已实测 |
 | A10 | **I8② fail-closed**：指名 id 有缺失 ⇒ 整体拒绝、**不做部分删除** | 同文件「I8② 尸体样本」：`ids:['m1','nope']` ⇒ `ok:false` + `missing:['nope']` + 文件不变 + 零留痕 | ✓ 已实测 |
 | A11 | **I8③ 必留痕**：真实删除追加一行（含 before/after/removedIds） | 同文件「I8③ 正路径」：`traced:true` + 留痕字段逐项断言 | ✓ 已实测 |
@@ -172,7 +172,8 @@
 | A15 | 删到空 ⇒ 侧车落成 `[]`、**文件保留**（不删文件本体） | 同文件「删到空」 | ✓ 已实测 |
 | A16 | **留痕失败不阻塞删除**（观测不反噬 · §5.22 规则 3） | 同文件「I8③ 尸体样本」：把留痕路径占成**目录** ⇒ `ok:true` + `applied:true` + `traced:false`（失败可见）+ 盘上确已删除 | ✓ 已实测 |
 | A17 | 纯层删除判据（空选择器 / 缺失 / 无匹配 / 入参不可变） | `node --test tests/marks.test.mjs` | ✓ 已实测 |
-| A18 | 全量回归（三个测试文件 35 例） | `npm test` ⇒ `35 pass / 0 fail`（rc=0，2026-10-04 10:46） | ✓ 已实测 |
+| A18 | 全量回归（四个测试文件） | `node --test "tests/*.test.mjs"` ⇒ **38 pass / 0 fail**（2026-10-05；10-04 为 35 例，2026-10-05 新增 `mark-shell.test.mjs` 3 例） | ✓ 已实测 |
+| A19 | **失败必须响亮**：`ok:false` 的 render 必须显示 `error` 原因 | `tests/mark-shell.test.mjs` M1（尸体样本：`kind:'bogus'` ⇒ 渲染含 `kind 必须`、**不含** `标记 null`、侧车未创建）+ M3（两种失败来源都显示原因） | ✓ 2026-10-05（先红后绿；缺陷见 §9） |
 
 ## 8 · 与实现的关系
 
@@ -218,6 +219,14 @@
   - 本插件工具数 **3 → 4**：README frontmatter `tools:` 自述与正文措辞（共 9 处「三个工具」）同批更新 —— **自述与清单必须同步**（`plugin_audit` 的漂移判据正是这一项）。
 - **实践读数（诚实标注）**：侧车自 2026-08-29 起**只有 1 个文件、1 条标记**，一个多月未新增 ⇒ 本工具的**预期使用率极低**。它补的是**能力完整性**（只增不减的结构缺口 + §10 U4），不是当下的高频痛点。这个区分本身有价值：**「删除能力弱」的后果取决于资产是否真在增长** —— kg 图在长（删不掉 = 真痛点），标记侧车基本不长（缺删除 = 理论缺口）。
 - 教训：**「只增不减」的根源不只是缺删除工具，还有「创建门槛低而使用场景少」** —— 补删除只解决前者；后者要由「这个设施到底该不该存在」来回答，不由本次改造回答。
+
+**2026-10-05：A2–A8 接线级验收 —— 抓出「失败被渲染成成功」的呈现缺陷**
+
+- **触发**：任务 `t-10a1817f`「删除能力线收尾」。核实发现 `context_unmark` 已实现且 I8 十条验收全绿，**但 A2–A8 七条「待验收」一直空着**——其中 A3/A4 尤其说明问题：**测试文件早就存在，只是「未在本轮执行」（从没人跑过）**。
+- **验完**（读数逐条见 §7）：A2 / A3（10 pass）/ A4（15 pass）/ A6 / A8 ✓ 实测；A5 **半通过**（**不写盘 ✓**，但**渲染错**）；A7 **有意不验**（需停用线上 `dsh-agent-context`，代价 > 收益——**不冒充已验**）。
+- **语义被修正（真缺陷，先红后绿）**：`context_mark` 的 render **不看 `ok`**——非法 kind 时实现层已正确返回 `{ok:false, mark:{id:null, error:'kind 必须 ∈ …'}}`，却被渲染成「`标记 null [undefined]`」，**错误原因整条丢失**，看起来像打标成功了。修法：`if (v?.ok === false) return ✗ ${error}`。新增 `tests/mark-shell.test.mjs`：M1 尸体样本（并含「**不得**出现 `标记 null`」的防修过头判据）/ M2 正路径仍正常 / M3 两种失败来源都显示原因。
+- **可迁移教训（与同日 `dsh-knowledge-graph` 两处缺陷同族）**：**执行层判定正确 ≠ 呈现层传对**。三次实测三种形状：① 渲染方向与数据相反（遍历对、展示错）；② 成功出参多带 `undefined` ⇒ 整包被管线拒（**报错但数据已变**）；③ 失败出参少传 `ok` ⇒ 原因丢失（**失败被显示成成功**）。共同修法都是「**让呈现层忠于执行层的判定**」；共同盲区都是「**单测只看值、不看用户最终读到什么**」。
+- 语义**被补充**：A18 例数口径 35 → **38**（四文件）；A8 的旧结论「须重启才生效」经实测**推翻**（`lib/index.js` mtime 早于 web 启动 8.9h ⇒ 已生效）——**结论有时点性，复验时必须重测，不能沿用旧判断**。
 
 ## 10 · 未决问题
 
