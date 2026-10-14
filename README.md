@@ -14,7 +14,7 @@
   <a href="https://github.com/jonah791/dsh-agent-context-steward"><img src="https://img.shields.io/badge/version-0.2.0-blue" alt="version"></a>
   <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
-  <img src="https://img.shields.io/badge/tests-35%20passed-brightgreen" alt="tests">
+  <img src="https://img.shields.io/badge/tests-38%20passed-brightgreen" alt="tests">
 </p>
 
 **一句话**：给智能体一副「看自己上下文」的眼睛——`context_health` 把当前会话的上下文压力/容量使用率/构成翻译成健康等级与动作建议，`context_mark` / `context_marks` 用旁路文件给上下文卷轴打「结构 + 语义」标记。
