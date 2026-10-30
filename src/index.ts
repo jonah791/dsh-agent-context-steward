@@ -89,11 +89,24 @@ export function apply(ctx: Context, config: Config): void {
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean', required: true }, health: { type: 'json', required: true } } },
       render: (_a, v) => {
-        const h = (v.health ?? {}) as { sessionId?: string; pressureTokens?: number; contextWindow?: number; usageRate?: number | null; level?: string; breakdown?: { systemPct?: number; toolsPct?: number; messagePct?: number; toolsDominant?: boolean }; suggestions?: string[] }
+        const h = (v.health ?? {}) as {
+          sessionId?: string; usedTokens?: number; recentPromptTokens?: number | null; contextWindow?: number
+          usageRate?: number | null; level?: string; breakdownSum?: number
+          breakdown?: { systemTokens?: number; toolsTokens?: number; messageTokens?: number; systemPct?: number; toolsPct?: number; messagePct?: number; toolsDominant?: boolean }
+          suggestions?: string[]
+        }
+        const k = (n: number | null | undefined): string => n === undefined || n === null ? '?' : (n / 1000).toFixed(1) + 'k'
         const rate = h.usageRate === null || h.usageRate === undefined ? '?' : (h.usageRate * 100).toFixed(0) + '%'
+        const b = h.breakdown ?? {}
+        // 口径必须写在读数旁边（「口径与读数同体，写在别处的口径 = 不存在」）：
+        // 2026-10-30 主人问「为什么总是对不上」——原 render 只给百分比、且把 projectedTokens
+        // 错名成 pressureTokens，于是既看不见绝对值、也看不出跟 GUI 是不是同口径。
         const lines = [
-          `上下文体检 ${h.sessionId ?? ''} [${h.level}] 使用率 ${rate}（${h.pressureTokens ?? 0}/${h.contextWindow ?? '?'} tokens）`,
-          `构成 system ${h.breakdown?.systemPct ?? 0}% / tools ${h.breakdown?.toolsPct ?? 0}% / message ${h.breakdown?.messagePct ?? 0}%`,
+          `上下文体检 ${h.sessionId ?? ''} [${h.level}] 使用率 ${rate}（${k(h.usedTokens)} / ${k(h.contextWindow)} tokens）`,
+          `· 占用 ${k(h.usedTokens)} ＝ projectedTokens（与 GUI 同口径：下一个请求预计）`,
+          `· 最近实测 ${k(h.recentPromptTokens)} ＝ pressureTokens（提供方上次真实计费输入；与占用不是同一个量）`,
+          `构成（启发式）system ${k(b.systemTokens)} ${b.systemPct ?? 0}% / tools ${k(b.toolsTokens)} ${b.toolsPct ?? 0}% / message ${k(b.messageTokens)} ${b.messagePct ?? 0}%`,
+          `· 构成之和 ${k(h.breakdownSum)} ≠ 占用 ${k(h.usedTokens)}（差 ${k((h.usedTokens ?? 0) - (h.breakdownSum ?? 0))}）：官方口径——构成按「每 token 四字符」估算，中文与 JSON schema 被系统性低估，两者本来就不是同一个量`,
           ...(h.suggestions ?? []).map((s) => '· ' + s),
         ]
         return [{ type: 'text', text: lines.join('\n') }]

@@ -33,16 +33,24 @@ export type HealthThresholds = {
 }
 
 /**
- * 体检报告 → 健康视图（纯函数，与改动前逐字等价）：
+ * 体检报告 → 健康视图（纯函数）：
  *   - 容量缺失（contextWindow 0/undefined）→ usageRate = NaN → level 保守取 'low'
- *   - 压力取 `projectedTokens ?? totalTokens ?? 0`
- *   - 构成占比按 system/tools/message 三者之和归一（全零时 `|| 1` 防除零）
+ *   - **占用取 `projectedTokens ?? totalTokens ?? 0`**，与官方 GUI 的
+ *     `context-occupancy.ts`（`pressure?.projectedTokens ?? pressure?.pressureTokens`）同口径；
+ *     等级与建议都挂在这个量上，所以「我报的百分比」必须等于「GUI 报的百分比」。
+ *   - **`recentPromptTokens` ≠ 占用**：它是提供方实测的上次请求 prompt 规模
+ *     （官方 `contextPressure.pressureTokens`），占用是「下一个请求将花多少」的预测。
+ *     2026-10-30 修正：原实现把预测值改名成 `pressureTokens` 输出 ⇒ 字段名指向另一个量，
+ *     与同插件的 `/context` 命令、与 GUI 天然对不上（主人当场发现）。故拆成两个字段。
+ *   - 构成占比按 system/tools/message 三者之和归一（全零时 `|| 1` 防除零）；
+ *     `breakdownSum` 一并返回，供「构成之和 vs 占用」的差额对账
+ *     （官方口径：构成是固定启发式估算，**总和不会等于总量**）。
  *   - 建议文案只在 medium/high 时生成（low 只回一句「无需处理」）
  */
 export function buildHealth(r: ContextReportLoose, thresholds: HealthThresholds) {
   const capacity = r.contextWindow ?? 0
-  const pressure = r.projectedTokens ?? r.totalTokens ?? 0
-  const usageRate = capacity > 0 ? pressure / capacity : NaN
+  const used = r.projectedTokens ?? r.totalTokens ?? 0
+  const usageRate = capacity > 0 ? used / capacity : NaN
   // 健康分级
   let level: 'low' | 'medium' | 'high'
   if (!isFinite(usageRate)) level = 'low'
@@ -81,13 +89,18 @@ export function buildHealth(r: ContextReportLoose, thresholds: HealthThresholds)
   }
   return {
     sessionId: r.sessionId,
-    pressureTokens: pressure,
+    /** 占用（与 GUI 同口径）：`projectedTokens ?? totalTokens`；百分比与等级都挂在这个量上 */
+    usedTokens: used,
+    /** 最近一次提供方实测的请求 prompt 规模（真 pressureTokens）。缺样本时 null——**不是 0**（JSON 无 undefined） */
+    recentPromptTokens: r.pressureTokens ?? null,
     contextWindow: capacity,
     usageRate: isFinite(usageRate) ? Math.round(usageRate * 100) / 100 : null,
     level,
     surface: { tokens: r.surfaceTokens, messages: r.surfaceMessages },
     usageTotal: r.usageTotal,
     breakdown,
+    /** 构成之和（固定启发式估算）。官方口径：它**不会等于** usedTokens，差额即启发式误差 */
+    breakdownSum: bt + tt + mt,
     suggestions,
   }
 }

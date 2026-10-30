@@ -36,9 +36,28 @@ test('buildHealth: 主路径——使用率 0.5 边界的等级与建议（真�
   assert.ok(high.suggestions[0].includes('使用率 75%：高压力'))
 })
 
-test('buildHealth: 压力取 projectedTokens 优先，回落 totalTokens', () => {
-  assert.equal(buildHealth(report({ projectedTokens: 40_000 }), TH).pressureTokens, 40_000)
-  assert.equal(buildHealth(report({}), TH).pressureTokens, 100_000)
+test('buildHealth: 占用取 projectedTokens 优先，回落 totalTokens', () => {
+  assert.equal(buildHealth(report({ projectedTokens: 40_000 }), TH).usedTokens, 40_000)
+  assert.equal(buildHealth(report({}), TH).usedTokens, 100_000)
+})
+
+// 2026-10-30 尸体测试：占用（预测）与最近实测（提供方压力）是**两个量**，不许串名。
+// 旧实现把 projectedTokens 装进 `pressureTokens` 字段输出 ⇒ 本用例在旧实现上必红。
+test('buildHealth: usedTokens（预测）与 recentPromptTokens（实测）分离 · 字段错名回归', () => {
+  const h = buildHealth(report({ projectedTokens: 219_000, pressureTokens: 154_385 }), TH)
+  assert.equal(h.usedTokens, 219_000) // 与 GUI context-occupancy 同口径
+  assert.equal(h.recentPromptTokens, 154_385) // 提供方实测，另一个量
+  assert.notEqual(h.usedTokens, h.recentPromptTokens)
+  // 缺实测样本 ⇒ null（不是 0，不是回落到占用——「没有样本」与「样本为零」不是一回事）
+  assert.equal(buildHealth(report({ projectedTokens: 40_000 }), TH).recentPromptTokens, null)
+  // 旧字段名必须已消失（fail-loud：读老的 `pressureTokens` 得到 undefined，而不是错值）
+  assert.equal(buildHealth(report({ projectedTokens: 40_000 }), TH).pressureTokens, undefined)
+})
+
+test('buildHealth: breakdownSum 透传——构成之和 ≠ 占用（官方口径，差额即启发式误差）', () => {
+  const h = buildHealth(report({ projectedTokens: 219_000, breakdown: { systemTokens: 2_700, toolsTokens: 66_300, messageTokens: 2_900 } }), TH)
+  assert.equal(h.breakdownSum, 71_900)
+  assert.ok(h.breakdownSum < h.usedTokens) // 中文 + JSON schema 在「每 token 四字符」下被严重低估
 })
 
 test('buildHealth: 构成占比四舍五入 + 透传 surface/usageTotal', () => {
@@ -103,7 +122,8 @@ test('buildHealth: 脏数据（负容量/NaN 压力/空对象）不抛且保守'
   assert.equal(nanPressure.level, 'low')
   const empty = buildHealth({}, TH)
   assert.equal(empty.level, 'low')
-  assert.equal(empty.pressureTokens, 0)
+  assert.equal(empty.usedTokens, 0)
+  assert.equal(empty.recentPromptTokens, null) // 无样本 ⇒ null，不伪造 0
 })
 
 test('eventsLengthOf: 事件数组/缺失/形状异常/访问抛错 一律不抛（缺失回 null）', () => {
