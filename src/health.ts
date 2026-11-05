@@ -81,7 +81,10 @@ export function buildHealth(r: ContextReportLoose, thresholds: HealthThresholds)
       suggestions.push(`使用率 ${(usageRate * 100).toFixed(0)}%：高压力——先剪噪音（prune_candidates→prune_apply），再 session_compact 压缩，别让 checkpoint 带垃圾。`)
     }
     if (breakdown.toolsDominant) {
-      suggestions.push(`tools 占比 ${breakdown.toolsPct}%（dominant）：大块工具结果堆积——优先剪过时的工具输出（tail 优先，零缓存破坏）。`)
+      // ⚠ 2026-11-05 纠错：toolsTokens 来自 estimateToolsTokens(header) = JSON.stringify(header.tools)/4，
+      // 量的是**工具定义**（全部工具的 schema），**不含任何工具结果**。原文案写成「大块工具结果堆积」
+      // 会让人去剪工具输出——剪枝对它零作用，白费一轮；正确的杠杆是收窄工具面（toolface 按域开关）。
+      suggestions.push(`tools 占比 ${breakdown.toolsPct}%（dominant）：这部分是**工具定义**（工具 schema 的 JSON，不含工具结果）⇒ 剪枝对它无效，收窄工具面才有用（toolface 按域开关）；真正可剪的是 message 侧。`)
     }
     if (bt / sum > 0.5) {
       suggestions.push(`system 占比 ${breakdown.systemPct}%：系统提示/记忆注入占用高——检查记忆注入是否必要，精简注入。`)
