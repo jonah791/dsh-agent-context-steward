@@ -130,6 +130,7 @@ export function apply(ctx: Context, config: Config): void {
   // ---- context_mark：给上下文卷轴打标记（结构+语义双维，方案 B 侧车） ----
   ctx.tools.register(defineTool({
     name: 'context_mark',
+    deferLoading: true,
     description: '给当前上下文打标记（卷轴标记：结构+语义双维）。kind=结构标签（explore 探索/conclusion 结论/noise 噪音/key 关键/extracted 已提取/keep 保留）；tags=语义标签（主题，如 ["保活","guardian"]）；note=说明。打标记用于头脑风暴后剪枝——敲定结论标 conclusion+key，被否定想法标 noise，后续剪枝优先剪 noise/extracted。侧车存储（方案 B）。',
     parameters: {
       kind: { type: 'string', required: true, description: '结构标签：explore/conclusion/noise/key/extracted/keep' },
@@ -172,6 +173,7 @@ export function apply(ctx: Context, config: Config): void {
   // ---- context_marks：列出上下文标记（按会话/结构/语义过滤） ----
   ctx.tools.register(defineTool({
     name: 'context_marks',
+    deferLoading: true,
     description: '列出上下文标记（卷轴标记，方案 B 侧车）：可过滤 sessionId/kind/tag。用于审视上下文结构——敲定后看哪些段标了 noise/extracted（可剪）、哪些是 conclusion/key（保留），辅助剪枝决策。',
     parameters: {
       sessionId: { type: 'string', description: '目标会话 id（缺省=当前活跃会话）' },
@@ -220,6 +222,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'context_unmark',
+    deferLoading: true,
     description: '撤销上下文标记（删除原语：默认干跑，apply:true 才写盘）。选择器 id / ids（精确，二者互斥）与 kind（结构标签批量）至少给一个，可组合（AND）；无选择器一律拒绝（防无参全删）。指名的 id 有任一不存在 ⇒ 整体拒绝、不做部分删除（fail-closed）。真实删除追加一行留痕到 <DSH_HOME>/context-marks/unmark-trace.jsonl。对应语义文档 I8。',
     parameters: {
       id: { type: 'string', description: '要撤销的标记 id（来自 context_mark / context_marks；与 ids 互斥）' },
